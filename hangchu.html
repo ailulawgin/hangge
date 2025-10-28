@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    
+    <title>1943 Air Combat - hangge.online</title>
+    <meta name="description" content="A canvas-based 1943-style top-down arcade shooter game prototype on hangge.online.">
+    <link rel="canonical" href="https://hangge.online">
+    
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #111;
+            font-family: 'Arial', sans-serif;
+            color: white;
+        }
+        
+        #game-canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            /* 居中画布 */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        /* 游戏UI (叠加在Canvas之上) */
+        #game-ui {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* 允许点击穿透到canvas */
+        }
+
+        #score-display {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 24px;
+            font-weight: bold;
+            color: #FFD700; /* 金色 */
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+
+        #health-display {
+            position: absolute;
+            top: 40px;
+            left: 10px;
+            font-size: 18px;
+            color: #FF4500; /* 橙红色 */
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+        }
+
+        #game-over-screen {
+            display: none; /* 默认隐藏 */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            border: 2px solid #FFF;
+            border-radius: 10px;
+            padding: 30px 50px;
+            text-align: center;
+            z-index: 100;
+        }
+
+        #game-over-screen h2 {
+            font-size: 3em;
+            color: #E6B800;
+            margin-bottom: 20px;
+        }
+
+        #game-over-screen p {
+            font-size: 1.5em;
+            color: #DDD;
+            margin-bottom: 30px;
+        }
+
+        #restart-button {
+            padding: 15px 30px;
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #FFF;
+            background-color: #007bff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+            pointer-events: all; /* 确保按钮可点击 */
+        }
+
+        #restart-button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="game-canvas"></canvas>
+    
+    <div id="game-ui">
+        <div id="score-display">Score: 0</div>
+        <div id="health-display">Health: 100</div>
+    </div>
+
+    <div id="game-over-screen">
+        <h2>GAME OVER!</h2>
+        <p>Your final score: <span id="final-score">0</span></p>
+        <button id="restart-button">RESTART</button>
+    </div>
+
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            
+            // --- 1. 初始化和获取元素 ---
+            const canvas = document.getElementById('game-canvas');
+            const ctx = canvas.getContext('2d');
+            
+            const scoreDisplay = document.getElementById('score-display');
+            const healthDisplay = document.getElementById('health-display');
+            const gameOverScreen = document.getElementById('game-over-screen');
+            const finalScoreDisplay = document.getElementById('final-score');
+            const restartButton = document.getElementById('restart-button');
+            
+            // 设置画布尺寸 (以一个标准尺寸为基准，保持比例)
+            const aspectRatio = 9 / 16; // 垂直射击游戏常用比例
+            if (window.innerHeight / window.innerWidth > aspectRatio) {
+                // 屏幕较高，宽度决定高度
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerWidth * aspectRatio;
+            } else {
+                // 屏幕较宽，高度决定宽度
+                canvas.height = window.innerHeight;
+                canvas.width = window.innerHeight / aspectRatio;
+            }
+            
+            // --- 2. 游戏状态和设置 ---
+            let isPaused = false;
+            let lastTime = 0;
+            let gameOver = false;
+            
+            const keys = {}; // 存储键盘按键状态 (A, D)
+            
+            // 实体数组
+            let player = null;
+            let playerBullets = [];
+            let enemies = [];
+            let enemyBullets = [];
+            
+            let score = 0;
+            
+            // 背景滚动
+            let backgroundY = 0;
+            const backgroundSpeed = 50; // 像素/秒
+            const backgroundImage = new Image();
+            backgroundImage.src = 'https://picsum.photos/seed/sea_texture/500/1000'; // 海洋纹理占位图
+
+            let enemySpawnTimer = 0;
+            const enemySpawnInterval = 1000; // 1秒刷一个敌人
+            
+            // --- 3. 实体类 (Classes) ---
+            
+            // 玩家飞机
+            class Player {
+                constructor() {
+                    this.width = 50;
+                    this.height = 50;
+                    this.x = canvas.width / 2 - this.width / 2;
+                    this.y = canvas.height - this.height - 50; // 底部
+                    this.speed = 250; // 250 像素/秒
+                    this.color = '#3B82F6'; // 蓝色
+                    this.health = 100;
+                    this.maxHealth = 100;
+
+                    this.bulletCooldown = 200; // 200ms 射一发
+                    this.bulletTimer = 0;
+                }
+                
+                update(deltaTime) {
+                    // 左右移动
+                    let vx = 0;
+                    if (keys['a'] || keys['A']) vx -= 1;
+                    if (keys['d'] || keys['D']) vx += 1;
+                    
+                    this.x += vx * this.speed * deltaTime;
+                    
+                    // 边界限制
+                    this.x = Math.max(0, Math.min(canvas.width - this.width, this.x));
+
+                    // 自动开火
+                    this.bulletTimer -= deltaTime * 1000; // 转换为毫秒
+                    if (this.bulletTimer <= 0) {
+                        this.bulletTimer = this.bulletCooldown;
+                        playerBullets.push(new PlayerBullet(this.x + this.width / 2, this.y));
+                    }
+                }
+                
+                draw() {
+                    ctx.fillStyle = this.color;
+                    ctx.fillRect(this.x, this.y, this.width, this.height);
+                    // 绘制一个简单的三角表示机头
+                    ctx.fillStyle = '#FFF';
+                    ctx.beginPath();
+                    ctx.moveTo(this.x + this.width / 2, this.y);
+                    ctx.lineTo(this.x, this.y + this.height / 2);
+                    ctx.lineTo(this.x + this.width, this.y + this.height / 2);
+                    ctx.fill();
+                }
+
+                takeDamage(amount) {
+                    this.health -= amount;
+                    if (this.health <= 0) {
+                        this.health = 0;
+                        endGame();
+                    }
+                    healthDisplay.textContent = `Health: ${this.health}`;
+                }
+            }
+            
+            // 玩家子弹
+            class PlayerBullet {
+                constructor(x, y) {
+                    this.x = x;
+                    this.y = y;
+                    this.width = 4;
+                    this.height = 10;
+                    this.speed = 500; // 500 像素/秒
+                    this.color = '#FFD700'; // 金色
+                    this.damage = 1;
+                }
+                
+                update(deltaTime) {
+                    this.y -= this.speed * deltaTime; // 向上飞
+                    if (this.y < 0) this.isDead = true;
+                }
+                
+                draw() {
+                    ctx.fillStyle = this.color;
+                    ctx.fillRect(this.x - this.width / 2, this.y, this.width, this.height);
+                }
+            }
+            
+            // 敌人飞机
+            class Enemy {
+                constructor(x, y, type = 'basic') {
+                    this.x = x;
+                    this.y = y;
+                    this.width = 40;
+                    this.height = 40;
+                    this.color = '#DC2626'; // 红色
+                    this.health = 3;
+                    this.speed = 100; // 100 像素/秒
+                    this.scoreValue = 10;
+                    
+                    this.bulletCooldown = 1500; // 1.5秒射一发
+                    this.bulletTimer = Math.random() * this.bulletCooldown; // 随机初始化，错开射击时间
+                }
+                
+                update(deltaTime) {
+                    this.y += this.speed * deltaTime; // 向下飞
+                    
+                    // 检查出界
+                    if (this.y > canvas.height + 50) {
+                        this.isDead = true; // 飞出屏幕的敌人也算“死亡”
+                    }
+
+                    // 自动射击玩家
+                    this.bulletTimer -= deltaTime * 1000;
+                    if (this.bulletTimer <= 0) {
+                        this.bulletTimer = this.bulletCooldown;
+                        enemyBullets.push(new EnemyBullet(this.x + this.width / 2, this.y + this.height));
+                    }
+                }
+                
+                draw() {
+                    ctx.fillStyle = this.color;
+                    ctx.fillRect(this.x, this.y, this.width, this.height);
+                    // 绘制一个简单的三角表示机头
+                    ctx.fillStyle = '#BBB';
+                    ctx.beginPath();
+                    ctx.moveTo(this.x + this.width / 2, this.y + this.height);
+                    ctx.lineTo(this.x, this.y + this.height / 2);
+                    ctx.lineTo(this.x + this.width, this.y + this.height / 2);
+                    ctx.fill();
+                }
+                
+                takeDamage(amount) {
+                    this.health -= amount;
+                    if (this.health <= 0) {
+                        this.isDead = true;
+                        score += this.scoreValue;
+                        updateScoreDisplay();
+                    }
+                }
+            }
+            
+            // 敌人子弹
+            class EnemyBullet {
+                constructor(x, y) {
+                    this.x = x;
+                    this.y = y;
+                    this.width = 6;
+                    this.height = 6;
+                    this.speed = 200; // 200 像素/秒
+                    this.color = '#FF4500'; // 橙红色
+                    this.damage = 10;
+                }
+                
+                update(deltaTime) {
+                    this.y += this.speed * deltaTime; // 向下飞
+                    if (this.y > canvas.height) this.isDead = true;
+                }
+                
+                draw() {
+                    ctx.fillStyle = this.color;
+                    ctx.fillRect(this.x - this.width / 2, this.y, this.width, this.height);
+                }
+            }
+            
+            // --- 4. 游戏循环 (Game Loop) ---
+            
+            function gameLoop(timestamp) {
+                if (isPaused || gameOver) {
+                    lastTime = timestamp;
+                    return; 
+                }
+                
+                const deltaTime = (timestamp - lastTime) / 1000;
+                lastTime = timestamp;
+                
+                update(deltaTime);
+                draw();
+                
+                requestAnimationFrame(gameLoop);
+            }
+            
+            // --- 5. 核心逻辑 (Update / Draw) ---
+            
+            function update(deltaTime) {
+                // 1. 背景滚动
+                backgroundY += backgroundSpeed * deltaTime;
+                if (backgroundY >= canvas.height) {
+                    backgroundY = 0; // 循环滚动
+                }
+
+                // 2. 刷怪
+                enemySpawnTimer -= deltaTime * 1000;
+                if (enemySpawnTimer <= 0) {
+                    enemySpawnTimer = enemySpawnInterval;
+                    spawnEnemy();
+                }
+                
+                // 3. 更新所有实体
+                player.update(deltaTime);
+                playerBullets.forEach(b => b.update(deltaTime));
+                enemies.forEach(e => e.update(deltaTime));
+                enemyBullets.forEach(b => b.update(deltaTime));
+                
+                // 4. 碰撞检测
+                checkCollisions();
+                
+                // 5. 清理死亡的实体
+                playerBullets = playerBullets.filter(b => !b.isDead);
+                enemies = enemies.filter(e => !e.isDead);
+                enemyBullets = enemyBullets.filter(b => !b.isDead);
+            }
+            
+            function draw() {
+                // 1. 绘制背景 (模拟卷轴)
+                if (backgroundImage.complete) {
+                    ctx.drawImage(backgroundImage, 0, backgroundY, canvas.width, canvas.height);
+                    ctx.drawImage(backgroundImage, 0, backgroundY - canvas.height, canvas.width, canvas.height);
+                } else {
+                    ctx.fillStyle = '#003366'; // 默认深蓝色海洋
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                }
+                
+                // 2. 绘制所有实体
+                player.draw();
+                playerBullets.forEach(b => b.draw());
+                enemies.forEach(e => e.draw());
+                enemyBullets.forEach(b => b.draw());
+            }
+            
+            // --- 6. 逻辑功能 ---
+            
+            function spawnEnemy() {
+                const x = Math.random() * (canvas.width - 40); // 随机 X 坐标
+                const y = -50; // 从屏幕顶部外出现
+                enemies.push(new Enemy(x, y));
+            }
+            
+            function checkCollisions() {
+                // 玩家子弹 vs 敌人
+                playerBullets.forEach(pBullet => {
+                    enemies.forEach(enemy => {
+                        if (!pBullet.isDead && !enemy.isDead && checkRectCollision(pBullet, enemy)) {
+                            enemy.takeDamage(pBullet.damage);
+                            pBullet.isDead = true;
+                        }
+                    });
+                });
+                
+                // 敌人子弹 vs 玩家
+                enemyBullets.forEach(eBullet => {
+                    if (!eBullet.isDead && checkRectCollision(eBullet, player)) {
+                        player.takeDamage(eBullet.damage);
+                        eBullet.isDead = true;
+                    }
+                });
+
+                // 敌人 vs 玩家 (飞机相撞)
+                enemies.forEach(enemy => {
+                    if (!enemy.isDead && checkRectCollision(enemy, player)) {
+                        player.takeDamage(20); // 撞击造成伤害
+                        enemy.takeDamage(enemy.health); // 敌人自毁
+                    }
+                });
+            }
+            
+            // 矩形碰撞检测函数
+            function checkRectCollision(rect1, rect2) {
+                return rect1.x < rect2.x + rect2.width &&
+                       rect1.x + rect1.width > rect2.x &&
+                       rect1.y < rect2.y + rect2.height &&
+                       rect1.y + rect1.height > rect2.y;
+            }
+            
+            function updateScoreDisplay() {
+                scoreDisplay.textContent = `Score: ${score}`;
+            }
+
+            function endGame() {
+                gameOver = true;
+                gameOverScreen.style.display = 'block';
+                finalScoreDisplay.textContent = score;
+            }
+
+            function resetGame() {
+                score = 0;
+                player = new Player(); // 重新创建玩家
+                playerBullets = [];
+                enemies = [];
+                enemyBullets = [];
+                backgroundY = 0;
+                enemySpawnTimer = 0;
+                gameOver = false;
+                
+                updateScoreDisplay();
+                healthDisplay.textContent = `Health: ${player.health}`;
+                gameOverScreen.style.display = 'none';
+
+                // 重新启动游戏循环
+                requestAnimationFrame((timestamp) => {
+                    lastTime = timestamp;
+                    gameLoop(timestamp);
+                });
+            }
+
+            // --- 7. 事件监听 ---
+            window.addEventListener('keydown', (e) => {
+                keys[e.key] = true;
+            });
+            window.addEventListener('keyup', (e) => {
+                keys[e.key] = false;
+            });
+            window.addEventListener('resize', () => {
+                // 重新调整画布尺寸
+                if (window.innerHeight / window.innerWidth > aspectRatio) {
+                    canvas.width = window.innerWidth;
+                    canvas.height = window.innerWidth * aspectRatio;
+                } else {
+                    canvas.height = window.innerHeight;
+                    canvas.width = window.innerHeight / aspectRatio;
+                }
+                // (注意：这里需要重新定位所有游戏实体，为了简化，目前只重置游戏)
+                resetGame(); 
+            });
+
+            restartButton.addEventListener('click', resetGame);
+            
+            // --- 8. 启动游戏 ---
+            player = new Player(); // 第一次创建玩家
+            healthDisplay.textContent = `Health: ${player.health}`; // 初始化血量显示
+            
+            // 加载背景图 (重要，确保图片加载完成后再开始游戏)
+            backgroundImage.onload = () => {
+                requestAnimationFrame((timestamp) => {
+                    lastTime = timestamp;
+                    gameLoop(timestamp);
+                });
+            };
+            // 如果图片加载失败或缓存中已有，直接开始
+            if (backgroundImage.complete) {
+                requestAnimationFrame((timestamp) => {
+                    lastTime = timestamp;
+                    gameLoop(timestamp);
+                });
+            } else {
+                // 如果图片仍在加载，可以显示一个加载提示
+                ctx.fillStyle = '#FFF';
+                ctx.font = '24px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('Loading background...', canvas.width / 2, canvas.height / 2);
+            }
+            
+        });
+    </script>
+</body>
+</html>
